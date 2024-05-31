@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -21,6 +23,7 @@ type Chapter struct {
 	ChapterTitle string             `bson:"chapterTitle" json:"chapterTitle"`
 	Subsections  []Subsection       `bson:"subsections" json:"subsections"`
 	Tags         []string           `bson:"tags" json:"tags"`
+	ImageURL     string             `bson:"imageURL" json:"imageURL"`
 }
 
 type Subsection struct {
@@ -140,6 +143,50 @@ func GetTags(response http.ResponseWriter, request *http.Request) {
 	}
 }
 
+func UploadImage(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("content-type", "application/json")
+
+	file, handler, err := request.FormFile("image")
+	if err != nil {
+		log.Println("Error retrieving the file:", err)
+		http.Error(response, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Ensure the images directory exists
+	os.MkdirAll("images", os.ModePerm)
+
+	// Create a temporary file within our images directory
+	filePath := fmt.Sprintf("images/%s", handler.Filename)
+	tempFile, err := os.Create(filePath)
+	if err != nil {
+		log.Println("Error creating the file:", err)
+		http.Error(response, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tempFile.Close()
+
+	// Read all the contents of the uploaded file into a byte array
+	fileBytes, err := io.ReadAll(file)
+	if err != nil {
+		log.Println("Error reading the file:", err)
+		http.Error(response, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Write this byte array to our temporary file
+	tempFile.Write(fileBytes)
+
+	imageURL := fmt.Sprintf("/images/%s", handler.Filename)
+	log.Println("Uploaded file:", imageURL)
+
+	response.WriteHeader(http.StatusOK)
+	json.NewEncoder(response).Encode(map[string]string{
+		"imageURL": imageURL,
+	})
+}
+
 func main() {
 	fmt.Println("Starting the application...")
 	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
@@ -150,7 +197,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Check the connection
 	err = client.Ping(ctx, nil)
 	if err != nil {
 		log.Fatal(err)
@@ -162,8 +208,13 @@ func main() {
 	router.HandleFunc("/chapters", GetChapters).Methods("GET")
 	router.HandleFunc("/chapter/{id}", UpdateChapter).Methods("PUT")
 	router.HandleFunc("/tags", GetTags).Methods("GET")
+	router.HandleFunc("/upload", UploadImage).Methods("POST")
 
-	// Use the CORS middleware
+	// Serve static files (images)
+	fs := http.FileServer(http.Dir("images"))
+	router.PathPrefix("/images/").Handler(http.StripPrefix("/images/", fs))
+
+	// CORS configuration
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:3000"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
